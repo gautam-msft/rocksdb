@@ -1803,13 +1803,156 @@ void rocksdb_writebatch_put_log_data(
 class H : public WriteBatch::Handler {
  public:
   void* state_;
+  void (*merge_cf_)(void*, uint32_t column_family_id, const char* k, size_t klen, const char* v, size_t vlen);
+  void (*merge_)(void*, const char* k, size_t klen, const char* v, size_t vlen);
+  void (*put_blob_index_)(void*, uint32_t column_family_id, const char* k, size_t klen, const char* v, size_t vlen);
+  void (*put_cf_)(void*, uint32_t column_family_id, const char* k, size_t klen, const char* v, size_t vlen);
   void (*put_)(void*, const char* k, size_t klen, const char* v, size_t vlen);
+  void (*log_data_)(void*, const char* data, size_t datalen);
+  void (*deleted_cf_)(void*, uint32_t column_family_id, const char* k, size_t klen);
   void (*deleted_)(void*, const char* k, size_t klen);
-  void Put(const Slice& key, const Slice& value) override {
-    (*put_)(state_, key.data(), key.size(), value.data(), value.size());
+  void (*single_delete_cf_)(void*, uint32_t column_family_id, const char* k, size_t klen);
+  void (*single_delete_)(void*, const char* k, size_t klen);
+  void (*delete_range_cf_)( void*, uint32_t column_family_id, const char* k_begin, size_t k_begin_len, const char* k_end, size_t k_end_len);
+  void (*mark_begin_prepare_)(void*, bool noop);
+  void (*mark_end_prepare_)(void*, const char* xid, size_t xid_len);
+  void (*mark_noop_)(void*, bool empty_batch);
+  void (*mark_rollback_)(void*, const char* xid, size_t xid_len);
+  void (*mark_commit_)(void*, const char* xid, size_t xid_len);
+
+  void LogData(const Slice& blob) {
+    if (log_data_) {
+      (*log_data_)(state_, blob.data(), blob.size());
+    } else {
+      WriteBatch::Handler::LogData(blob);
+    }
   }
+
+  Status PutCF(uint32_t column_family_id, const Slice& key, const Slice& value) override {
+    if (put_cf_) {
+      (*put_cf_)(state_, column_family_id, key.data(), key.size(), value.data(), value.size());
+      return Status::OK();
+    } else {
+      return WriteBatch::Handler::PutCF(column_family_id, key, value);
+    }
+  }
+
+  void Put(const Slice& key, const Slice& value) override {
+    if (put_) {
+      (*put_)(state_, key.data(), key.size(), value.data(), value.size());
+    }
+  }
+
+  Status MergeCF(uint32_t column_family_id, const Slice& key, const Slice& value) override {
+    if (merge_cf_) {
+      (*merge_cf_)(state_, column_family_id, key.data(), key.size(), value.data(), value.size());
+      return Status::OK();
+    } else {
+      return WriteBatch::Handler::MergeCF(column_family_id, key, value);
+    }
+  }
+
+  void Merge(const Slice& key, const Slice& value) override {
+    if (merge_) {
+      (*merge_)(state_, key.data(), key.size(), value.data(), value.size());
+    }
+  }
+
+  Status DeleteRangeCF(uint32_t column_family_id, const Slice& begin_key, const Slice& end_key) override {
+    if (delete_range_cf_) {
+      (*delete_range_cf_)(state_, column_family_id, begin_key.data(), begin_key.size(), end_key.data(), end_key.size());
+      return Status::OK();
+    } else {
+      return WriteBatch::Handler::DeleteRangeCF(column_family_id, begin_key, end_key);
+    }
+  }
+
+  Status SingleDeleteCF(uint32_t column_family_id, const Slice& key) override {
+    if (single_delete_cf_) {
+      (*single_delete_cf_)(state_, column_family_id, key.data(), key.size());
+      return Status::OK();
+    } else {
+      return WriteBatch::Handler::SingleDeleteCF(column_family_id, key);
+    }
+  }
+
+  void SingleDelete(const Slice& key) override {
+    if (single_delete_) {
+      (*single_delete_)(state_, key.data(), key.size());
+    } else {
+      return WriteBatch::Handler::SingleDelete(key);
+    }
+  }
+
+  Status DeleteCF(uint32_t column_family_id, const Slice& key) override {
+    if (deleted_cf_) {
+      (*deleted_cf_)(state_, column_family_id, key.data(), key.size());
+      return Status::OK();
+    } else {
+      return WriteBatch::Handler::DeleteCF(column_family_id, key);
+    }
+  }
+
   void Delete(const Slice& key) override {
-    (*deleted_)(state_, key.data(), key.size());
+    if (deleted_) {
+      (*deleted_)(state_, key.data(), key.size());
+    }
+  }
+
+  Status PutBlobIndexCF(uint32_t column_family_id,
+                                const Slice& key,
+                                const Slice& value) {
+    if (put_blob_index_) {
+      (*put_blob_index_)(state_, column_family_id, key.data(), key.size(), value.data(), value.size());
+      return Status::OK();
+    }
+
+    return WriteBatch::Handler::PutBlobIndexCF(column_family_id, key, value);
+  }
+
+  Status MarkBeginPrepare(bool noop) {
+    if (mark_begin_prepare_) {
+      (*mark_begin_prepare_)(state_, noop);
+      return Status::OK();
+    }
+
+    return WriteBatch::Handler::MarkBeginPrepare(noop);
+  }
+
+  Status MarkEndPrepare(const Slice& xid) {
+    if (mark_end_prepare_) {
+      (*mark_end_prepare_)(state_, xid.data(), xid.size());
+      return Status::OK();
+    }
+
+    return WriteBatch::Handler::MarkEndPrepare(xid);
+  }
+
+  Status MarkNoop(bool empty_batch) {
+    if (mark_noop_) {
+      (*mark_noop_)(state_, empty_batch);
+      return Status::OK();
+    }
+
+    return WriteBatch::Handler::MarkNoop(empty_batch);
+  }
+
+  Status MarkRollback(const Slice& xid) {
+    if (mark_rollback_) {
+      (*mark_rollback_)(state_, xid.data(), xid.size());
+      return Status::OK();
+    }
+
+    return WriteBatch::Handler::MarkRollback(xid);
+  }
+
+  Status MarkCommit(const Slice& xid) {
+    if (mark_commit_) {
+      (*mark_commit_)(state_, xid.data(), xid.size());
+      return Status::OK();
+    }
+
+    return WriteBatch::Handler::MarkCommit(xid);
   }
 };
 
@@ -1822,6 +1965,46 @@ void rocksdb_writebatch_iterate(
   handler.state_ = state;
   handler.put_ = put;
   handler.deleted_ = deleted;
+  b->rep.Iterate(&handler);
+}
+
+void rocksdb_writebatch_iterate_full(
+    rocksdb_writebatch_t* b,
+    void* state,
+    void (*put_cf)(void*, uint32_t column_family_id, const char* k, size_t klen, const char* v, size_t vlen),
+    void (*put)(void*, const char* k, size_t klen, const char* v, size_t vlen),
+    void (*merge_cf)(void*, uint32_t column_family_id, const char* k, size_t klen, const char* v, size_t vlen),
+    void (*merge)(void*, const char* k, size_t klen, const char* v, size_t vlen),
+    void (*single_delete_cf)(void*, uint32_t column_family_id, const char* k, size_t klen),
+    void (*single_delete)(void*, const char* k, size_t klen),
+    void (*deleted_cf)(void*, uint32_t column_family_id, const char* k, size_t klen),
+    void (*deleted)(void*, const char* k, size_t klen),
+    void (*delete_range_cf)(void*, uint32_t column_family_id, const char* begin_k, size_t begin_klen, const char* end_k, size_t end_klen),
+    void (*log_data)(void*, const char* data, size_t datalen),
+    void (*put_blob_index)(void*, uint32_t column_family_id, const char* k, size_t klen, const char* v, size_t vlen),
+    void (*mark_begin_prepare)(void*, bool noop),
+    void (*mark_end_prepare)(void*, const char* xid, size_t xid_len),
+    void (*mark_noop)(void*, bool empty_batch),
+    void (*mark_rollback)(void*, const char* xid, size_t xid_len),
+    void (*mark_commit)(void*, const char* xid, size_t xid_len)) {
+  H handler;
+  handler.state_ = state;
+  handler.put_cf_ = put_cf;
+  handler.put_ = put;
+  handler.merge_cf_ = merge_cf;
+  handler.merge_ = merge;
+  handler.single_delete_cf_ = single_delete_cf;
+  handler.single_delete_ = single_delete;
+  handler.deleted_cf_ = deleted_cf;
+  handler.deleted_ = deleted;
+  handler.delete_range_cf_ = delete_range_cf;
+  handler.log_data_ = log_data;
+  handler.put_blob_index_ = put_blob_index;
+  handler.mark_begin_prepare_ = mark_begin_prepare;
+  handler.mark_end_prepare_ = mark_end_prepare;
+  handler.mark_noop_ = mark_noop;
+  handler.mark_rollback_ = mark_rollback;
+  handler.mark_commit_ = mark_commit;
   b->rep.Iterate(&handler);
 }
 
