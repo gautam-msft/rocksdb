@@ -1816,7 +1816,7 @@ class H : public WriteBatch::Handler {
   void (*delete_range_cf_)( void*, uint32_t column_family_id, const char* k_begin, size_t k_begin_len, const char* k_end, size_t k_end_len);
   void (*mark_begin_prepare_)(void*);
   void (*mark_end_prepare_)(void*, const char* xid, size_t xid_len);
-  void (*mark_noop_)(void*, bool empty_batch);
+  void (*mark_noop_)(void*, char empty_batch);
   void (*mark_rollback_)(void*, const char* xid, size_t xid_len);
   void (*mark_commit_)(void*, const char* xid, size_t xid_len);
 
@@ -1984,7 +1984,7 @@ void rocksdb_writebatch_iterate_complete(
     void (*log_data)(void*, const char* data, size_t datalen),
     void (*mark_begin_prepare)(void*),
     void (*mark_end_prepare)(void*, const char* xid, size_t xid_len),
-    void (*mark_noop)(void*, bool empty_batch),
+    void (*mark_noop)(void*, char empty_batch),
     void (*mark_rollback)(void*, const char* xid, size_t xid_len),
     void (*mark_commit)(void*, const char* xid, size_t xid_len)) {
   H handler;

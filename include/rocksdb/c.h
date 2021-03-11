@@ -676,9 +676,9 @@ extern ROCKSDB_LIBRARY_API void rocksdb_writebatch_iterate_complete(
     void (*single_delete_cf)(void*, uint32_t column_family_id, const char* k, size_t klen),
     void (*single_delete)(void*, const char* k, size_t klen),
     void (*log_data)(void*, const char* data, size_t datalen),
-    void (*mark_begin_prepare)(void*, bool noop),
+    void (*mark_begin_prepare)(void*),
     void (*mark_end_prepare)(void*, const char* xid, size_t xid_len),
-    void (*mark_noop)(void*, bool empty_batch),
+    void (*mark_noop)(void*, char empty_batch),
     void (*mark_rollback)(void*, const char* xid, size_t xid_len),
     void (*mark_commit)(void*, const char* xid, size_t xid_len));
 extern ROCKSDB_LIBRARY_API const char* rocksdb_writebatch_data(
