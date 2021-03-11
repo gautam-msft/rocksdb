@@ -1963,8 +1963,22 @@ void rocksdb_writebatch_iterate(
     void (*deleted)(void*, const char* k, size_t klen)) {
   H handler;
   handler.state_ = state;
+  handler.put_cf_ = NULL;
   handler.put_ = put;
+  handler.merge_cf_ = NULL;
+  handler.merge_ = NULL;
+  handler.single_delete_cf_ = NULL;
+  handler.single_delete_ = NULL;
+  handler.deleted_cf_ = NULL;
   handler.deleted_ = deleted;
+  handler.delete_range_cf_ = NULL;
+  handler.log_data_ = NULL;
+  handler.put_blob_index_ = NULL;
+  handler.mark_begin_prepare_ = NULL;
+  handler.mark_end_prepare_ = NULL;
+  handler.mark_noop_ = NULL;
+  handler.mark_rollback_ = NULL;
+  handler.mark_commit_ = NULL;
   b->rep.Iterate(&handler);
 }
 
