@@ -50,6 +50,7 @@ class Arena;
 class ErrorHandler;
 class MemTable;
 class SnapshotChecker;
+class SystemClock;
 class TableCache;
 class Version;
 class VersionEdit;

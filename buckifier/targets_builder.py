@@ -25,10 +25,11 @@ def pretty_list(lst, indent=8):
 
 
 class TARGETSBuilder(object):
-    def __init__(self, path):
+    def __init__(self, path, extra_argv):
         self.path = path
         self.targets_file = open(path, 'wb')
-        header = targets_cfg.rocksdb_target_header_template
+        header = targets_cfg.rocksdb_target_header_template.format(
+            extra_argv=extra_argv)
         self.targets_file.write(header.encode("utf-8"))
         self.total_lib = 0
         self.total_bin = 0
@@ -90,7 +91,7 @@ cpp_binary(
 ) if not is_opt_mode else None
 
 custom_unittest(
-    "c_test",
+    name = "c_test",
     command = [
         native.package_name() + "/buckifier/rocks_test_runner.sh",
         "$(location :{})".format("c_test_bin"),

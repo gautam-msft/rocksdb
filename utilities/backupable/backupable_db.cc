@@ -30,6 +30,7 @@
 
 #include "env/composite_env_wrapper.h"
 #include "file/filename.h"
+#include "file/line_file_reader.h"
 #include "file/sequence_file_reader.h"
 #include "file/writable_file_writer.h"
 #include "logging/logging.h"
@@ -129,9 +130,11 @@ class BackupEngineImpl : public BackupEngine {
 
   // The returned BackupInfos are in chronological order, which means the
   // latest backup comes last.
-  void GetBackupInfo(std::vector<BackupInfo>* backup_info) override;
+  void GetBackupInfo(std::vector<BackupInfo>* backup_info,
+                     bool include_file_details) const override;
 
-  void GetCorruptedBackups(std::vector<BackupID>* corrupt_backup_ids) override;
+  void GetCorruptedBackups(
+      std::vector<BackupID>* corrupt_backup_ids) const override;
 
   using BackupEngine::RestoreDBFromBackup;
   Status RestoreDBFromBackup(const RestoreOptions& options, BackupID backup_id,
@@ -215,22 +218,20 @@ class BackupEngineImpl : public BackupEngine {
 
     ~BackupMeta() {}
 
-    void RecordTimestamp() {
-      env_->GetCurrentTime(&timestamp_);
-    }
+    Status RecordTimestamp() { return env_->GetCurrentTime(&timestamp_); }
     int64_t GetTimestamp() const {
       return timestamp_;
     }
     uint64_t GetSize() const {
       return size_;
     }
-    uint32_t GetNumberFiles() { return static_cast<uint32_t>(files_.size()); }
+    uint32_t GetNumberFiles() const {
+      return static_cast<uint32_t>(files_.size());
+    }
     void SetSequenceNumber(uint64_t sequence_number) {
       sequence_number_ = sequence_number;
     }
-    uint64_t GetSequenceNumber() {
-      return sequence_number_;
-    }
+    uint64_t GetSequenceNumber() const { return sequence_number_; }
 
     const std::string& GetAppMetadata() const { return app_metadata_; }
 
@@ -242,9 +243,7 @@ class BackupEngineImpl : public BackupEngine {
 
     Status Delete(bool delete_meta = true);
 
-    bool Empty() {
-      return files_.empty();
-    }
+    bool Empty() const { return files_.empty(); }
 
     std::shared_ptr<FileInfo> GetFile(const std::string& filename) const {
       auto it = file_infos_->find(filename);
@@ -253,7 +252,7 @@ class BackupEngineImpl : public BackupEngine {
       return it->second;
     }
 
-    const std::vector<std::shared_ptr<FileInfo>>& GetFiles() {
+    const std::vector<std::shared_ptr<FileInfo>>& GetFiles() const {
       return files_;
     }
 
@@ -291,8 +290,6 @@ class BackupEngineImpl : public BackupEngine {
     std::vector<std::shared_ptr<FileInfo>> files_;
     std::unordered_map<std::string, std::shared_ptr<FileInfo>>* file_infos_;
     Env* env_;
-
-    static const size_t max_backup_meta_file_size_ = 10 * 1024 * 1024;  // 10MB
   };  // BackupMeta
 
   inline std::string GetAbsolutePath(
@@ -331,13 +328,6 @@ class BackupEngineImpl : public BackupEngine {
                BackupableDBOptions::kLegacyCrc32cAndFileSize ||
            sid.empty();
   }
-  inline bool UseInterimNaming(const std::string& sid) const {
-    // The indicator of SST file from early internal 6.12 release
-    // is a '-' in the DB session id. DB session id was made more
-    // concise without '-' after that.
-    return (GetNamingFlags() & BackupableDBOptions::kFlagMatchInterimNaming) &&
-           sid.find('-') != std::string::npos;
-  }
   inline std::string GetSharedFileWithChecksum(
       const std::string& file, bool has_checksum,
       const std::string& checksum_hex, const uint64_t file_size,
@@ -350,8 +340,6 @@ class BackupEngineImpl : public BackupEngine {
       file_copy.insert(file_copy.find_last_of('.'),
                        "_" + ToString(ChecksumHexToInt32(checksum_hex)) + "_" +
                            ToString(file_size));
-    } else if (UseInterimNaming(db_session_id)) {
-      file_copy.insert(file_copy.find_last_of('.'), "_" + db_session_id);
     } else {
       file_copy.insert(file_copy.find_last_of('.'), "_s" + db_session_id);
       if (GetNamingFlags() & BackupableDBOptions::kFlagIncludeFileSize) {
@@ -402,6 +390,16 @@ class BackupEngineImpl : public BackupEngine {
                              std::string* db_session_id);
 
   struct CopyOrCreateResult {
+    ~CopyOrCreateResult() {
+      // The Status needs to be ignored here for two reasons.
+      // First, if the BackupEngineImpl shuts down with jobs outstanding, then
+      // it is possible that the Status in the future/promise is never read,
+      // resulting in an unchecked Status. Second, if there are items in the
+      // channel when the BackupEngineImpl is shutdown, these will also have
+      // Status that have not been checked.  This
+      // TODO: Fix those issues so that the Status
+      status.PermitUncheckedError();
+    }
     uint64_t size;
     std::string checksum_hex;
     std::string db_id;
@@ -670,6 +668,9 @@ BackupEngineImpl::~BackupEngineImpl() {
     t.join();
   }
   LogFlush(options_.info_log);
+  for (const auto& it : corrupt_backups_) {
+    it.second.first.PermitUncheckedError();
+  }
 }
 
 Status BackupEngineImpl::Initialize() {
@@ -732,9 +733,6 @@ Status BackupEngineImpl::Initialize() {
   }
   // create backups_ structure
   for (auto& file : backup_meta_files) {
-    if (file == "." || file == "..") {
-      continue;
-    }
     ROCKS_LOG_INFO(options_.info_log, "Detected backup %s", file.c_str());
     BackupID backup_id = 0;
     sscanf(file.c_str(), "%u", &backup_id);
@@ -783,7 +781,9 @@ Status BackupEngineImpl::Initialize() {
     for (const auto& rel_dir :
          {GetSharedFileRel(), GetSharedFileWithChecksumRel()}) {
       const auto abs_dir = GetAbsolutePath(rel_dir);
-      InsertPathnameToSizeBytes(abs_dir, backup_env_, &abs_path_to_size);
+      // TODO: What do do on error?
+      InsertPathnameToSizeBytes(abs_dir, backup_env_, &abs_path_to_size)
+          .PermitUncheckedError();
     }
     // load the backups if any, until valid_backups_to_open of the latest
     // non-corrupted backups have been successfully opened.
@@ -801,11 +801,13 @@ Status BackupEngineImpl::Initialize() {
 
       // Insert files and their sizes in backup sub-directories
       // (private/backup_id) to abs_path_to_size
-      InsertPathnameToSizeBytes(
+      Status s = InsertPathnameToSizeBytes(
           GetAbsolutePath(GetPrivateFileRel(backup_iter->first)), backup_env_,
           &abs_path_to_size);
-      Status s = backup_iter->second->LoadFromFile(options_.backup_dir,
-                                                   abs_path_to_size);
+      if (s.ok()) {
+        s = backup_iter->second->LoadFromFile(options_.backup_dir,
+                                              abs_path_to_size);
+      }
       if (s.IsCorruption()) {
         ROCKS_LOG_INFO(options_.info_log, "Backup %u corrupted -- %s",
                        backup_iter->first, s.ToString().c_str());
@@ -961,7 +963,8 @@ Status BackupEngineImpl::CreateNewBackupWithMetadata(
                          &backuped_file_infos_, backup_env_))));
   assert(ret.second == true);
   auto& new_backup = ret.first->second;
-  new_backup->RecordTimestamp();
+  // TODO: What should we do on error here?
+  new_backup->RecordTimestamp().PermitUncheckedError();
   new_backup->SetAppMetadata(app_metadata);
 
   auto start_backup = backup_env_->NowMicros();
@@ -969,6 +972,13 @@ Status BackupEngineImpl::CreateNewBackupWithMetadata(
   ROCKS_LOG_INFO(options_.info_log,
                  "Started the backup process -- creating backup %u",
                  new_backup_id);
+
+  if (options_.share_table_files && !options_.share_files_with_checksum) {
+    ROCKS_LOG_WARN(options_.info_log,
+                   "BackupableDBOptions::share_files_with_checksum=false is "
+                   "DEPRECATED and could lead to data loss.");
+  }
+
   if (s.ok()) {
     s = backup_env_->CreateDir(private_dir);
   }
@@ -986,7 +996,7 @@ Status BackupEngineImpl::CreateNewBackupWithMetadata(
 
   std::vector<BackupAfterCopyOrCreateWorkItem> backup_items_to_finish;
   // Add a CopyOrCreateWorkItem to the channel for each live file
-  db->DisableFileDeletions();
+  Status disabled = db->DisableFileDeletions();
   if (s.ok()) {
     CheckpointImpl checkpoint(db);
     uint64_t sequence_number = 0;
@@ -1091,8 +1101,9 @@ Status BackupEngineImpl::CreateNewBackupWithMetadata(
   }
 
   // we copied all the files, enable file deletions
-  db->EnableFileDeletions(false);
-
+  if (disabled.ok()) {  // If we successfully disabled file deletions
+    db->EnableFileDeletions(false).PermitUncheckedError();
+  }
   auto backup_time = backup_env_->NowMicros() - start_backup;
 
   if (s.ok()) {
@@ -1133,7 +1144,7 @@ Status BackupEngineImpl::CreateNewBackupWithMetadata(
                    backup_statistics_.ToString().c_str());
     // delete files that we might have already written
     might_need_garbage_collect_ = true;
-    DeleteBackup(new_backup_id);
+    DeleteBackup(new_backup_id).PermitUncheckedError();
     return s;
   }
 
@@ -1201,6 +1212,7 @@ Status BackupEngineImpl::DeleteBackup(BackupID backup_id) {
   }
 
   if (!s1.ok()) {
+    s2.PermitUncheckedError();  // What to do?
     return s1;
   } else {
     return s2;
@@ -1229,6 +1241,7 @@ Status BackupEngineImpl::DeleteBackupInternal(BackupID backup_id) {
     if (!s.ok()) {
       return s;
     }
+    corrupt->second.first.PermitUncheckedError();
     corrupt_backups_.erase(corrupt);
   }
 
@@ -1265,21 +1278,31 @@ Status BackupEngineImpl::DeleteBackupInternal(BackupID backup_id) {
   return Status::OK();
 }
 
-void BackupEngineImpl::GetBackupInfo(std::vector<BackupInfo>* backup_info) {
+void BackupEngineImpl::GetBackupInfo(std::vector<BackupInfo>* backup_info,
+                                     bool include_file_details) const {
   assert(initialized_);
   backup_info->reserve(backups_.size());
   for (auto& backup : backups_) {
-    if (!backup.second->Empty()) {
-      backup_info->push_back(BackupInfo(
-          backup.first, backup.second->GetTimestamp(), backup.second->GetSize(),
-          backup.second->GetNumberFiles(), backup.second->GetAppMetadata()));
+    const BackupMeta& meta = *backup.second;
+    if (!meta.Empty()) {
+      backup_info->push_back(BackupInfo(backup.first, meta.GetTimestamp(),
+                                        meta.GetSize(), meta.GetNumberFiles(),
+                                        meta.GetAppMetadata()));
+      if (include_file_details) {
+        auto& file_details = backup_info->back().file_details;
+        file_details.reserve(meta.GetFiles().size());
+        for (auto& file_ptr : meta.GetFiles()) {
+          BackupFileInfo& info = *file_details.emplace(file_details.end());
+          info.relative_filename = file_ptr->filename;
+          info.size = file_ptr->size;
+        }
+      }
     }
   }
 }
 
-void
-BackupEngineImpl::GetCorruptedBackups(
-    std::vector<BackupID>* corrupt_backup_ids) {
+void BackupEngineImpl::GetCorruptedBackups(
+    std::vector<BackupID>* corrupt_backup_ids) const {
   assert(initialized_);
   corrupt_backup_ids->reserve(corrupt_backups_.size());
   for (auto& backup : corrupt_backups_) {
@@ -1310,8 +1333,8 @@ Status BackupEngineImpl::RestoreDBFromBackup(const RestoreOptions& options,
                  static_cast<int>(options.keep_log_files));
 
   // just in case. Ignore errors
-  db_env_->CreateDirIfMissing(db_dir);
-  db_env_->CreateDirIfMissing(wal_dir);
+  db_env_->CreateDirIfMissing(db_dir).PermitUncheckedError();
+  db_env_->CreateDirIfMissing(wal_dir).PermitUncheckedError();
 
   if (options.keep_log_files) {
     // delete files in db_dir, but keep all the log files
@@ -1319,7 +1342,8 @@ Status BackupEngineImpl::RestoreDBFromBackup(const RestoreOptions& options,
     // move all the files from archive dir to wal_dir
     std::string archive_dir = ArchivalDirectory(wal_dir);
     std::vector<std::string> archive_files;
-    db_env_->GetChildren(archive_dir, &archive_files);  // ignore errors
+    db_env_->GetChildren(archive_dir, &archive_files)
+        .PermitUncheckedError();  // ignore errors
     for (const auto& f : archive_files) {
       uint64_t number;
       FileType type;
@@ -1439,7 +1463,9 @@ Status BackupEngineImpl::VerifyBackup(BackupID backup_id,
   for (const auto& rel_dir : {GetPrivateFileRel(backup_id), GetSharedFileRel(),
                               GetSharedFileWithChecksumRel()}) {
     const auto abs_dir = GetAbsolutePath(rel_dir);
-    InsertPathnameToSizeBytes(abs_dir, backup_env_, &curr_abs_path_to_size);
+    // TODO: What to do on error?
+    InsertPathnameToSizeBytes(abs_dir, backup_env_, &curr_abs_path_to_size)
+        .PermitUncheckedError();
   }
 
   // For all files registered in backup
@@ -1463,9 +1489,11 @@ Status BackupEngineImpl::VerifyBackup(BackupID backup_id,
       std::string checksum_hex;
       ROCKS_LOG_INFO(options_.info_log, "Verifying %s checksum...\n",
                      abs_path.c_str());
-      ReadFileAndComputeChecksum(abs_path, backup_env_, EnvOptions(),
-                                 0 /* size_limit */, &checksum_hex);
-      if (file_info->checksum_hex != checksum_hex) {
+      Status s = ReadFileAndComputeChecksum(abs_path, backup_env_, EnvOptions(),
+                                            0 /* size_limit */, &checksum_hex);
+      if (!s.ok()) {
+        return s;
+      } else if (file_info->checksum_hex != checksum_hex) {
         std::string checksum_info(
             "Expected checksum is " + file_info->checksum_hex +
             " while computed checksum is " + checksum_hex);
@@ -1484,10 +1512,10 @@ Status BackupEngineImpl::CopyOrCreateFile(
     uint64_t size_limit, std::function<void()> progress_callback) {
   assert(src.empty() != contents.empty());
   Status s;
-  std::unique_ptr<WritableFile> dst_file;
-  std::unique_ptr<SequentialFile> src_file;
-  EnvOptions dst_env_options;
-  dst_env_options.use_mmap_writes = false;
+  std::unique_ptr<FSWritableFile> dst_file;
+  std::unique_ptr<FSSequentialFile> src_file;
+  FileOptions dst_file_options;
+  dst_file_options.use_mmap_writes = false;
   // TODO:(gzh) maybe use direct reads/writes here if possible
   if (size != nullptr) {
     *size = 0;
@@ -1499,21 +1527,22 @@ Status BackupEngineImpl::CopyOrCreateFile(
     size_limit = std::numeric_limits<uint64_t>::max();
   }
 
-  s = dst_env->NewWritableFile(dst, &dst_file, dst_env_options);
+  s = dst_env->GetFileSystem()->NewWritableFile(dst, dst_file_options,
+                                                &dst_file, nullptr);
   if (s.ok() && !src.empty()) {
-    s = src_env->NewSequentialFile(src, &src_file, src_env_options);
+    s = src_env->GetFileSystem()->NewSequentialFile(
+        src, FileOptions(src_env_options), &src_file, nullptr);
   }
   if (!s.ok()) {
     return s;
   }
 
-  std::unique_ptr<WritableFileWriter> dest_writer(new WritableFileWriter(
-      NewLegacyWritableFileWrapper(std::move(dst_file)), dst, dst_env_options));
+  std::unique_ptr<WritableFileWriter> dest_writer(
+      new WritableFileWriter(std::move(dst_file), dst, dst_file_options));
   std::unique_ptr<SequentialFileReader> src_reader;
   std::unique_ptr<char[]> buf;
   if (!src.empty()) {
-    src_reader.reset(new SequentialFileReader(
-        NewLegacySequentialFileWrapper(src_file), src));
+    src_reader.reset(new SequentialFileReader(std::move(src_file), src));
     buf.reset(new char[copy_file_buffer_size_]);
   }
 
@@ -1589,7 +1618,6 @@ Status BackupEngineImpl::AddBackupFileWorkItem(
 
   std::string dst_relative = fname.substr(1);
   std::string dst_relative_tmp;
-  Status s;
   std::string checksum_hex;
   std::string db_id;
   std::string db_session_id;
@@ -1622,15 +1650,16 @@ Status BackupEngineImpl::AddBackupFileWorkItem(
       // Ignore the returned status
       // In the failed cases, db_id and db_session_id will be empty
       GetFileDbIdentities(db_env_, src_env_options, src_dir + fname, &db_id,
-                          &db_session_id);
+                          &db_session_id)
+          .PermitUncheckedError();
     }
     // Calculate checksum if checksum and db session id are not available.
     // If db session id is available, we will not calculate the checksum
     // since the session id should suffice to avoid file name collision in
     // the shared_checksum directory.
     if (!has_checksum && db_session_id.empty()) {
-      s = ReadFileAndComputeChecksum(src_dir + fname, db_env_, src_env_options,
-                                     size_limit, &checksum_hex);
+      Status s = ReadFileAndComputeChecksum(
+          src_dir + fname, db_env_, src_env_options, size_limit, &checksum_hex);
       if (!s.ok()) {
         return s;
       }
@@ -1692,7 +1721,6 @@ Status BackupEngineImpl::AddBackupFileWorkItem(
     } else if (exist.IsNotFound()) {
       file_exists = false;
     } else {
-      assert(s.IsIOError());
       return exist;
     }
   }
@@ -1710,7 +1738,8 @@ Status BackupEngineImpl::AddBackupFileWorkItem(
           "overwrite the file.",
           fname.c_str());
       need_to_copy = true;
-      backup_env_->DeleteFile(final_dest_path);
+      //**TODO: What to do on error?
+      backup_env_->DeleteFile(final_dest_path).PermitUncheckedError();
     } else {
       // file exists and referenced
       if (!has_checksum) {
@@ -1739,9 +1768,9 @@ Status BackupEngineImpl::AddBackupFileWorkItem(
           // same_path should not happen for a standard DB, so OK to
           // read file contents to check for checksum mismatch between
           // two files from same DB getting same name.
-          s = ReadFileAndComputeChecksum(src_dir + fname, db_env_,
-                                         src_env_options, size_limit,
-                                         &checksum_hex);
+          Status s = ReadFileAndComputeChecksum(src_dir + fname, db_env_,
+                                                src_env_options, size_limit,
+                                                &checksum_hex);
           if (!s.ok()) {
             return s;
           }
@@ -1783,14 +1812,14 @@ Status BackupEngineImpl::AddBackupFileWorkItem(
         temp_dest_path, final_dest_path, dst_relative);
     backup_items_to_finish.push_back(std::move(after_copy_or_create_work_item));
     CopyOrCreateResult result;
-    result.status = s;
+    result.status = Status::OK();
     result.size = size_bytes;
     result.checksum_hex = std::move(checksum_hex);
     result.db_id = std::move(db_id);
     result.db_session_id = std::move(db_session_id);
     promise_result.set_value(std::move(result));
   }
-  return s;
+  return Status::OK();
 }
 
 Status BackupEngineImpl::ReadFileAndComputeChecksum(
@@ -1804,14 +1833,14 @@ Status BackupEngineImpl::ReadFileAndComputeChecksum(
     size_limit = std::numeric_limits<uint64_t>::max();
   }
 
-  std::unique_ptr<SequentialFile> src_file;
-  Status s = src_env->NewSequentialFile(src, &src_file, src_env_options);
+  std::unique_ptr<SequentialFileReader> src_reader;
+  Status s = SequentialFileReader::Create(src_env->GetFileSystem(), src,
+                                          FileOptions(src_env_options),
+                                          &src_reader, nullptr);
   if (!s.ok()) {
     return s;
   }
 
-  std::unique_ptr<SequentialFileReader> src_reader(
-      new SequentialFileReader(NewLegacySequentialFileWrapper(src_file), src));
   std::unique_ptr<char[]> buf(new char[copy_file_buffer_size_]);
   Slice data;
 
@@ -1893,7 +1922,7 @@ Status BackupEngineImpl::GetFileDbIdentities(Env* src_env,
 void BackupEngineImpl::DeleteChildren(const std::string& dir,
                                       uint32_t file_type_filter) {
   std::vector<std::string> children;
-  db_env_->GetChildren(dir, &children);  // ignore errors
+  db_env_->GetChildren(dir, &children).PermitUncheckedError();  // ignore errors
 
   for (const auto& f : children) {
     uint64_t number;
@@ -1903,7 +1932,7 @@ void BackupEngineImpl::DeleteChildren(const std::string& dir,
       // don't delete this file
       continue;
     }
-    db_env_->DeleteFile(dir + "/" + f);  // ignore errors
+    db_env_->DeleteFile(dir + "/" + f).PermitUncheckedError();  // ignore errors
   }
 }
 
@@ -1961,9 +1990,6 @@ Status BackupEngineImpl::GarbageCollect() {
       }
     }
     for (auto& child : shared_children) {
-      if (child == "." || child == "..") {
-        continue;
-      }
       std::string rel_fname;
       if (with_checksum) {
         rel_fname = GetSharedFileWithChecksumRel(child);
@@ -2000,10 +2026,6 @@ Status BackupEngineImpl::GarbageCollect() {
     }
   }
   for (auto& child : private_children) {
-    if (child == "." || child == "..") {
-      continue;
-    }
-
     BackupID backup_id = 0;
     bool tmp_dir = child.find(".tmp") != std::string::npos;
     sscanf(child.c_str(), "%u", &backup_id);
@@ -2016,18 +2038,16 @@ Status BackupEngineImpl::GarbageCollect() {
     std::string full_private_path =
         GetAbsolutePath(GetPrivateFileRel(backup_id));
     std::vector<std::string> subchildren;
-    backup_env_->GetChildren(full_private_path, &subchildren);
-    for (auto& subchild : subchildren) {
-      if (subchild == "." || subchild == "..") {
-        continue;
-      }
-      Status s = backup_env_->DeleteFile(full_private_path + subchild);
-      ROCKS_LOG_INFO(options_.info_log, "Deleting %s -- %s",
-                     (full_private_path + subchild).c_str(),
-                     s.ToString().c_str());
-      if (!s.ok()) {
-        // Trying again later might work
-        might_need_garbage_collect_ = true;
+    if (backup_env_->GetChildren(full_private_path, &subchildren).ok()) {
+      for (auto& subchild : subchildren) {
+        Status s = backup_env_->DeleteFile(full_private_path + subchild);
+        ROCKS_LOG_INFO(options_.info_log, "Deleting %s -- %s",
+                       (full_private_path + subchild).c_str(),
+                       s.ToString().c_str());
+        if (!s.ok()) {
+          // Trying again later might work
+          might_need_garbage_collect_ = true;
+        }
       }
     }
     // finally delete the private dir
@@ -2129,56 +2149,54 @@ Status BackupEngineImpl::BackupMeta::LoadFromFile(
     const std::string& backup_dir,
     const std::unordered_map<std::string, uint64_t>& abs_path_to_size) {
   assert(Empty());
-  Status s;
-  std::unique_ptr<SequentialFile> backup_meta_file;
-  s = env_->NewSequentialFile(meta_filename_, &backup_meta_file, EnvOptions());
-  if (!s.ok()) {
-    return s;
-  }
-
-  std::unique_ptr<SequentialFileReader> backup_meta_reader(
-      new SequentialFileReader(NewLegacySequentialFileWrapper(backup_meta_file),
-                               meta_filename_));
-  std::unique_ptr<char[]> buf(new char[max_backup_meta_file_size_ + 1]);
-  Slice data;
-  s = backup_meta_reader->Read(max_backup_meta_file_size_, &data, buf.get());
-
-  if (!s.ok() || data.size() == max_backup_meta_file_size_) {
-    return s.ok() ? Status::Corruption("File size too big") : s;
-  }
-  buf[data.size()] = 0;
-
-  uint32_t num_files = 0;
-  char *next;
-  timestamp_ = strtoull(data.data(), &next, 10);
-  data.remove_prefix(next - data.data() + 1); // +1 for '\n'
-  sequence_number_ = strtoull(data.data(), &next, 10);
-  data.remove_prefix(next - data.data() + 1); // +1 for '\n'
-
-  if (data.starts_with(kMetaDataPrefix)) {
-    // app metadata present
-    data.remove_prefix(kMetaDataPrefix.size());
-    Slice hex_encoded_metadata = GetSliceUntil(&data, '\n');
-    bool decode_success = hex_encoded_metadata.DecodeHex(&app_metadata_);
-    if (!decode_success) {
-      return Status::Corruption(
-          "Failed to decode stored hex encoded app metadata");
+  std::unique_ptr<LineFileReader> backup_meta_reader;
+  {
+    Status s =
+        LineFileReader::Create(env_->GetFileSystem(), meta_filename_,
+                               FileOptions(), &backup_meta_reader, nullptr);
+    if (!s.ok()) {
+      return s;
     }
   }
 
-  num_files = static_cast<uint32_t>(strtoul(data.data(), &next, 10));
-  data.remove_prefix(next - data.data() + 1); // +1 for '\n'
-
+  // Failures handled at the end
+  std::string line;
+  if (backup_meta_reader->ReadLine(&line)) {
+    timestamp_ = std::strtoull(line.c_str(), nullptr, /*base*/ 10);
+  }
+  if (backup_meta_reader->ReadLine(&line)) {
+    sequence_number_ = std::strtoull(line.c_str(), nullptr, /*base*/ 10);
+  }
+  if (backup_meta_reader->ReadLine(&line)) {
+    Slice data = line;
+    if (data.starts_with(kMetaDataPrefix)) {
+      // app metadata present
+      data.remove_prefix(kMetaDataPrefix.size());
+      bool decode_success = data.DecodeHex(&app_metadata_);
+      if (!decode_success) {
+        return Status::Corruption(
+            "Failed to decode stored hex encoded app metadata");
+      }
+      line.clear();
+    } else {
+      // process the line below
+    }
+  } else {
+    line.clear();
+  }
+  uint32_t num_files = UINT32_MAX;
+  if (!line.empty() || backup_meta_reader->ReadLine(&line)) {
+    num_files = static_cast<uint32_t>(strtoul(line.c_str(), nullptr, 10));
+  }
   std::vector<std::shared_ptr<FileInfo>> files;
+  while (backup_meta_reader->ReadLine(&line)) {
+    std::vector<std::string> components = StringSplit(line, ' ');
 
-  // WART: The checksums are crc32c, not original crc32
-  Slice checksum_prefix("crc32 ");
+    if (components.size() < 1) {
+      return Status::Corruption("Empty line instead of file entry.");
+    }
 
-  for (uint32_t i = 0; s.ok() && i < num_files; ++i) {
-    auto line = GetSliceUntil(&data, '\n');
-    // filename is relative, i.e., shared/number.sst,
-    // shared_checksum/number.sst, or private/backup_id/number.sst
-    std::string filename = GetSliceUntil(&line, ' ').ToString();
+    const std::string& filename = components[0];
 
     uint64_t size;
     const std::shared_ptr<FileInfo> file_info = GetFile(filename);
@@ -2186,52 +2204,63 @@ Status BackupEngineImpl::BackupMeta::LoadFromFile(
       size = file_info->size;
     } else {
       std::string abs_path = backup_dir + "/" + filename;
-      try {
-        size = abs_path_to_size.at(abs_path);
-      } catch (std::out_of_range&) {
-        return Status::Corruption("Size missing for pathname: " + abs_path);
+      auto e = abs_path_to_size.find(abs_path);
+      if (e == abs_path_to_size.end()) {
+        return Status::Corruption("Pathname in meta file not found on disk: " +
+                                  abs_path);
       }
+      size = e->second;
     }
 
-    if (line.empty()) {
+    if (components.size() < 3) {
       return Status::Corruption("File checksum is missing for " + filename +
                                 " in " + meta_filename_);
     }
 
-    uint32_t checksum_value = 0;
-    if (line.starts_with(checksum_prefix)) {
-      line.remove_prefix(checksum_prefix.size());
-      checksum_value = static_cast<uint32_t>(strtoul(line.data(), nullptr, 10));
-      if (line != ROCKSDB_NAMESPACE::ToString(checksum_value)) {
-        return Status::Corruption("Invalid checksum value for " + filename +
-                                  " in " + meta_filename_);
-      }
-    } else {
+    // WART: The checksums are crc32c, not original crc32
+    if (components[1] != "crc32") {
       return Status::Corruption("Unknown checksum type for " + filename +
                                 " in " + meta_filename_);
+    }
+
+    uint32_t checksum_value =
+        static_cast<uint32_t>(strtoul(components[2].c_str(), nullptr, 10));
+    if (components[2] != ROCKSDB_NAMESPACE::ToString(checksum_value)) {
+      return Status::Corruption("Invalid checksum value for " + filename +
+                                " in " + meta_filename_);
+    }
+
+    if (components.size() > 3) {
+      return Status::Corruption("Extra data for entry " + filename + " in " +
+                                meta_filename_);
     }
 
     files.emplace_back(
         new FileInfo(filename, size, ChecksumInt32ToHex(checksum_value)));
   }
 
-  if (s.ok() && data.size() > 0) {
-    // file has to be read completely. if not, we count it as corruption
-    s = Status::Corruption("Tailing data in backup meta file in " +
-                           meta_filename_);
-  }
-
-  if (s.ok()) {
-    files_.reserve(files.size());
-    for (const auto& file_info : files) {
-      s = AddFile(file_info);
-      if (!s.ok()) {
-        break;
-      }
+  {
+    Status s = backup_meta_reader->GetStatus();
+    if (!s.ok()) {
+      return s;
     }
   }
 
-  return s;
+  if (num_files != files.size()) {
+    return Status::Corruption(
+        "Inconsistent number of files or missing/incomplete header in " +
+        meta_filename_);
+  }
+
+  files_.reserve(files.size());
+  for (const auto& file_info : files) {
+    Status s = AddFile(file_info);
+    if (!s.ok()) {
+      return s;
+    }
+  }
+
+  return Status::OK();
 }
 
 Status BackupEngineImpl::BackupMeta::StoreToFile(bool sync) {
@@ -2245,70 +2274,25 @@ Status BackupEngineImpl::BackupMeta::StoreToFile(bool sync) {
     return s;
   }
 
-  std::unique_ptr<char[]> buf(new char[max_backup_meta_file_size_]);
-  size_t len = 0, buf_size = max_backup_meta_file_size_;
-  len += snprintf(buf.get(), buf_size, "%" PRId64 "\n", timestamp_);
-  len += snprintf(buf.get() + len, buf_size - len, "%" PRIu64 "\n",
-                  sequence_number_);
+  std::ostringstream buf;
+  buf << static_cast<unsigned long long>(timestamp_) << "\n";
+  buf << sequence_number_ << "\n";
+
   if (!app_metadata_.empty()) {
     std::string hex_encoded_metadata =
         Slice(app_metadata_).ToString(/* hex */ true);
-
-    // +1 to accommodate newline character
-    size_t hex_meta_strlen =
-        kMetaDataPrefix.ToString().length() + hex_encoded_metadata.length() + 1;
-    if (hex_meta_strlen >= buf_size) {
-      return Status::Corruption("Buffer too small to fit backup metadata");
-    }
-    else if (len + hex_meta_strlen >= buf_size) {
-      backup_meta_file->Append(Slice(buf.get(), len));
-      buf.reset();
-      std::unique_ptr<char[]> new_reset_buf(
-          new char[max_backup_meta_file_size_]);
-      buf.swap(new_reset_buf);
-      len = 0;
-    }
-    len += snprintf(buf.get() + len, buf_size - len, "%s%s\n",
-                    kMetaDataPrefix.ToString().c_str(),
-                    hex_encoded_metadata.c_str());
+    buf << kMetaDataPrefix.ToString() << hex_encoded_metadata << "\n";
   }
-
-  char writelen_temp[19];
-  if (len + snprintf(writelen_temp, sizeof(writelen_temp),
-                     "%" ROCKSDB_PRIszt "\n", files_.size()) >= buf_size) {
-    backup_meta_file->Append(Slice(buf.get(), len));
-    buf.reset();
-    std::unique_ptr<char[]> new_reset_buf(new char[max_backup_meta_file_size_]);
-    buf.swap(new_reset_buf);
-    len = 0;
-  }
-  {
-    const char *const_write = writelen_temp;
-    len += snprintf(buf.get() + len, buf_size - len, "%s", const_write);
-  }
+  buf << files_.size() << "\n";
 
   for (const auto& file : files_) {
     // use crc32c for now, switch to something else if needed
     // WART: The checksums are crc32c, not original crc32
-
-    size_t newlen =
-        len + file->filename.length() +
-        snprintf(writelen_temp, sizeof(writelen_temp), " crc32 %u\n",
-                 ChecksumHexToInt32(file->checksum_hex));
-    const char* const_write = writelen_temp;
-    if (newlen >= buf_size) {
-      backup_meta_file->Append(Slice(buf.get(), len));
-      buf.reset();
-      std::unique_ptr<char[]> new_reset_buf(
-          new char[max_backup_meta_file_size_]);
-      buf.swap(new_reset_buf);
-      len = 0;
-    }
-    len += snprintf(buf.get() + len, buf_size - len, "%s%s",
-                    file->filename.c_str(), const_write);
+    buf << file->filename << " crc32 " << ChecksumHexToInt32(file->checksum_hex)
+        << "\n";
   }
 
-  s = backup_meta_file->Append(Slice(buf.get(), len));
+  s = backup_meta_file->Append(Slice(buf.str()));
   if (s.ok() && sync) {
     s = backup_meta_file->Sync();
   }
@@ -2331,11 +2315,13 @@ class BackupEngineReadOnlyImpl : public BackupEngineReadOnly {
 
   // The returned BackupInfos are in chronological order, which means the
   // latest backup comes last.
-  void GetBackupInfo(std::vector<BackupInfo>* backup_info) override {
-    backup_engine_->GetBackupInfo(backup_info);
+  void GetBackupInfo(std::vector<BackupInfo>* backup_info,
+                     bool include_file_details) const override {
+    backup_engine_->GetBackupInfo(backup_info, include_file_details);
   }
 
-  void GetCorruptedBackups(std::vector<BackupID>* corrupt_backup_ids) override {
+  void GetCorruptedBackups(
+      std::vector<BackupID>* corrupt_backup_ids) const override {
     backup_engine_->GetCorruptedBackups(corrupt_backup_ids);
   }
 
