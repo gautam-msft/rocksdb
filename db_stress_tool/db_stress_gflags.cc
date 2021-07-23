@@ -792,6 +792,10 @@ DEFINE_bool(paranoid_file_checks, true,
             "After writing every SST file, reopen it and read all the keys "
             "and validate checksums");
 
+DEFINE_bool(fail_if_options_file_error, false,
+            "Fail operations that fail to detect or properly persist options "
+            "file.");
+
 DEFINE_uint64(batch_protection_bytes_per_key, 0,
               "If nonzero, enables integrity protection in `WriteBatch` at the "
               "specified number of bytes per key. Currently the only supported "
@@ -803,5 +807,13 @@ DEFINE_string(file_checksum_impl, "none",
 
 DEFINE_int32(write_fault_one_in, 0,
              "On non-zero, enables fault injection on write");
+
+DEFINE_uint64(user_timestamp_size, 0,
+              "Number of bytes for a user-defined timestamp. Currently, only "
+              "8-byte is supported");
+
+DEFINE_int32(open_metadata_write_fault_one_in, 0,
+             "On non-zero, enables fault injection on file metadata write "
+             "during DB reopen.");
 
 #endif  // GFLAGS

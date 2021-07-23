@@ -17,7 +17,6 @@ LIB_SOURCES =                                                   \
   db/builder.cc                                                 \
   db/c.cc                                                       \
   db/column_family.cc                                           \
-  db/compacted_db_impl.cc                                       \
   db/compaction/compaction.cc                                   \
   db/compaction/compaction_iterator.cc                          \
   db/compaction/compaction_job.cc                               \
@@ -28,6 +27,7 @@ LIB_SOURCES =                                                   \
   db/compaction/sst_partitioner.cc                              \
   db/convenience.cc                                             \
   db/db_filesnapshot.cc                                         \
+  db/db_impl/compacted_db_impl.cc                                       \
   db/db_impl/db_impl.cc                                         \
   db/db_impl/db_impl_compaction_flush.cc                        \
   db/db_impl/db_impl_debug.cc                                   \
@@ -86,6 +86,7 @@ LIB_SOURCES =                                                   \
   env/env_posix.cc                                              \
   env/file_system.cc                                            \
   env/fs_posix.cc                                               \
+  env/fs_remap.cc                                               \
   env/file_system_tracer.cc                                     \
   env/io_posix.cc                                               \
   env/mock_env.cc                                               \
@@ -204,6 +205,7 @@ LIB_SOURCES =                                                   \
   util/compression_context_cache.cc                             \
   util/concurrent_task_limiter_impl.cc                          \
   util/crc32c.cc                                                \
+  util/crc32c_arm64.cc                                          \
   util/dynamic_bloom.cc                                         \
   util/hash.cc                                                  \
   util/murmurhash.cc                                            \
@@ -273,11 +275,6 @@ LIB_SOURCES =                                                   \
   utilities/ttl/db_ttl_impl.cc                                  \
   utilities/write_batch_with_index/write_batch_with_index.cc    \
   utilities/write_batch_with_index/write_batch_with_index_internal.cc    \
-
-ifeq ($(ARMCRC_SOURCE),1)
-LIB_SOURCES +=\
-  util/crc32c_arm64.cc
-endif
 
 ifeq (,$(shell $(CXX) -fsyntax-only -maltivec -xc /dev/null 2>&1))
 LIB_SOURCES_ASM =\
@@ -435,7 +432,6 @@ TEST_MAIN_SOURCES =                                                     \
   db/external_sst_file_test.cc                                          \
   db/fault_injection_test.cc                                            \
   db/file_indexer_test.cc                                               \
-  db/file_reader_writer_test.cc                                         \
   db/filename_test.cc                                                   \
   db/flush_job_test.cc                                                  \
   db/listener_test.cc                                                   \
