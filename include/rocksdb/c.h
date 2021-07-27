@@ -533,6 +533,9 @@ extern ROCKSDB_LIBRARY_API const rocksdb_livefiles_t* rocksdb_livefiles(
 extern ROCKSDB_LIBRARY_API void rocksdb_flush(
     rocksdb_t* db, const rocksdb_flushoptions_t* options, char** errptr);
 
+extern ROCKSDB_LIBRARY_API void rocksdb_flush_wal(
+    rocksdb_t* db, int sync, char** errptr);
+
 extern ROCKSDB_LIBRARY_API void rocksdb_flush_cf(
     rocksdb_t* db, const rocksdb_flushoptions_t* options,
     rocksdb_column_family_handle_t* column_family, char** errptr);
@@ -1236,6 +1239,10 @@ extern ROCKSDB_LIBRARY_API void rocksdb_options_set_WAL_size_limit_MB(
     rocksdb_options_t*, uint64_t);
 extern ROCKSDB_LIBRARY_API uint64_t
 rocksdb_options_get_WAL_size_limit_MB(rocksdb_options_t*);
+extern ROCKSDB_LIBRARY_API void rocksdb_options_set_manual_WAL_flush(
+    rocksdb_options_t*, int);
+extern ROCKSDB_LIBRARY_API int
+rocksdb_options_get_manual_WAL_flush(rocksdb_options_t*);
 extern ROCKSDB_LIBRARY_API void rocksdb_options_set_manifest_preallocation_size(
     rocksdb_options_t*, size_t);
 extern ROCKSDB_LIBRARY_API size_t

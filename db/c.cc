@@ -1493,6 +1493,13 @@ void rocksdb_flush(
   SaveError(errptr, db->rep->Flush(options->rep));
 }
 
+void rocksdb_flush_wal(
+    rocksdb_t* db,
+    int sync,
+    char** errptr) {
+  SaveError(errptr, db->rep->FlushWAL(sync));
+}
+
 void rocksdb_flush_cf(
     rocksdb_t* db,
     const rocksdb_flushoptions_t* options,
@@ -3132,6 +3139,24 @@ void rocksdb_options_set_WAL_size_limit_MB(
 
 uint64_t rocksdb_options_get_WAL_size_limit_MB(rocksdb_options_t* opt) {
   return opt->rep.WAL_size_limit_MB;
+}
+
+void rocksdb_options_set_manual_WAL_flush(
+    rocksdb_options_t* opt, int manual_flush) {
+  opt->rep.manual_wal_flush = manual_flush;
+}
+
+int rocksdb_options_get_manual_WAL_flush(rocksdb_options_t* opt) {
+  return opt->rep.manual_wal_flush;
+}
+
+void rocksdb_options_set_two_write_queues(
+    rocksdb_options_t* opt, int use_two_write_queues) {
+  opt->rep.two_write_queues = use_two_write_queues;
+}
+
+int rocksdb_options_get_two_write_queues(rocksdb_options_t* opt) {
+  return opt->rep.two_write_queues;
 }
 
 void rocksdb_options_set_manifest_preallocation_size(
