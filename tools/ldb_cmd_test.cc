@@ -12,6 +12,7 @@
 #include "env/composite_env_wrapper.h"
 #include "file/filename.h"
 #include "port/stack_trace.h"
+#include "rocksdb/convenience.h"
 #include "rocksdb/file_checksum.h"
 #include "rocksdb/utilities/options_util.h"
 #include "test_util/sync_point.h"
@@ -31,12 +32,8 @@ class LdbCmdTest : public testing::Test {
   LdbCmdTest() : testing::Test() {}
 
   Env* TryLoadCustomOrDefaultEnv() {
-    const char* test_env_uri = getenv("TEST_ENV_URI");
-    if (!test_env_uri) {
-      return Env::Default();
-    }
     Env* env = Env::Default();
-    Env::LoadEnv(test_env_uri, &env, &env_guard_);
+    EXPECT_OK(test::CreateEnvFromSystem(ConfigOptions(), &env, &env_guard_));
     return env;
   }
 
@@ -206,7 +203,7 @@ class FileChecksumTestHelper {
     WriteBufferManager wb(options_.db_write_buffer_size);
     ImmutableDBOptions immutable_db_options(options_);
     VersionSet versions(dbname_, &immutable_db_options, sopt, tc.get(), &wb,
-                        &wc, nullptr, nullptr);
+                        &wc, nullptr, nullptr, "");
     std::vector<std::string> cf_name_list;
     Status s;
     s = versions.ListColumnFamilies(&cf_name_list, dbname_,
@@ -257,15 +254,18 @@ class FileChecksumTestHelper {
   // comparing it with the one being generated when a SST file is created.
   Status VerifyEachFileChecksum() {
     assert(db_ != nullptr);
+    EXPECT_OK(db_->DisableFileDeletions());
     std::vector<LiveFileMetaData> live_files;
     db_->GetLiveFilesMetaData(&live_files);
+    Status cs;
     for (auto a_file : live_files) {
-      Status cs = VerifyChecksum(a_file);
+      cs = VerifyChecksum(a_file);
       if (!cs.ok()) {
-        return cs;
+        break;
       }
     }
-    return Status::OK();
+    EXPECT_OK(db_->EnableFileDeletions());
+    return cs;
   }
 };
 
@@ -312,15 +312,20 @@ TEST_F(LdbCmdTest, DumpFileChecksumNoChecksum) {
     ASSERT_OK(db->Put(wopts, buf, v));
   }
   ASSERT_OK(db->Flush(fopts));
+  ASSERT_OK(db->Close());
+  delete db;
 
   char arg1[] = "./ldb";
   char arg2[1024];
   snprintf(arg2, sizeof(arg2), "--db=%s", dbname.c_str());
   char arg3[] = "file_checksum_dump";
-  char* argv[] = {arg1, arg2, arg3};
+  char arg4[] = "--hex";
+  char* argv[] = {arg1, arg2, arg3, arg4};
 
   ASSERT_EQ(0,
-            LDBCommandRunner::RunCommand(3, argv, opts, LDBOptions(), nullptr));
+            LDBCommandRunner::RunCommand(4, argv, opts, LDBOptions(), nullptr));
+
+  ASSERT_OK(DB::Open(opts, dbname, &db));
 
   // Verify each sst file checksum value and checksum name
   FileChecksumTestHelper fct_helper(opts, db, dbname);
@@ -339,8 +344,13 @@ TEST_F(LdbCmdTest, DumpFileChecksumNoChecksum) {
   FileChecksumTestHelper fct_helper_ac(opts, db, dbname);
   ASSERT_OK(fct_helper_ac.VerifyEachFileChecksum());
 
+  ASSERT_OK(db->Close());
+  delete db;
+
   ASSERT_EQ(0,
-            LDBCommandRunner::RunCommand(3, argv, opts, LDBOptions(), nullptr));
+            LDBCommandRunner::RunCommand(4, argv, opts, LDBOptions(), nullptr));
+
+  ASSERT_OK(DB::Open(opts, dbname, &db));
 
   // Verify the checksum information in memory is the same as that in Manifest;
   std::vector<LiveFileMetaData> live_files;
@@ -393,14 +403,19 @@ TEST_F(LdbCmdTest, BlobDBDumpFileChecksumNoChecksum) {
     ASSERT_OK(db->Put(wopts, oss.str(), v));
   }
   ASSERT_OK(db->Flush(fopts));
+  ASSERT_OK(db->Close());
+  delete db;
 
   char arg1[] = "./ldb";
   std::string arg2_str = "--db=" + dbname;
   char arg3[] = "file_checksum_dump";
-  char* argv[] = {arg1, const_cast<char*>(arg2_str.c_str()), arg3};
+  char arg4[] = "--hex";
+  char* argv[] = {arg1, const_cast<char*>(arg2_str.c_str()), arg3, arg4};
 
   ASSERT_EQ(0,
-            LDBCommandRunner::RunCommand(3, argv, opts, LDBOptions(), nullptr));
+            LDBCommandRunner::RunCommand(4, argv, opts, LDBOptions(), nullptr));
+
+  ASSERT_OK(DB::Open(opts, dbname, &db));
 
   // Verify each sst and blob file checksum value and checksum name
   FileChecksumTestHelper fct_helper(opts, db, dbname);
@@ -422,10 +437,11 @@ TEST_F(LdbCmdTest, BlobDBDumpFileChecksumNoChecksum) {
   FileChecksumTestHelper fct_helper_ac(opts, db, dbname);
   ASSERT_OK(fct_helper_ac.VerifyEachFileChecksum());
 
-  ASSERT_EQ(0,
-            LDBCommandRunner::RunCommand(3, argv, opts, LDBOptions(), nullptr));
-
+  ASSERT_OK(db->Close());
   delete db;
+
+  ASSERT_EQ(0,
+            LDBCommandRunner::RunCommand(4, argv, opts, LDBOptions(), nullptr));
 }
 
 TEST_F(LdbCmdTest, DumpFileChecksumCRC32) {
@@ -472,15 +488,20 @@ TEST_F(LdbCmdTest, DumpFileChecksumCRC32) {
     ASSERT_OK(db->Put(wopts, buf, v));
   }
   ASSERT_OK(db->Flush(fopts));
+  ASSERT_OK(db->Close());
+  delete db;
 
   char arg1[] = "./ldb";
   char arg2[1024];
   snprintf(arg2, sizeof(arg2), "--db=%s", dbname.c_str());
   char arg3[] = "file_checksum_dump";
-  char* argv[] = {arg1, arg2, arg3};
+  char arg4[] = "--hex";
+  char* argv[] = {arg1, arg2, arg3, arg4};
 
   ASSERT_EQ(0,
-            LDBCommandRunner::RunCommand(3, argv, opts, LDBOptions(), nullptr));
+            LDBCommandRunner::RunCommand(4, argv, opts, LDBOptions(), nullptr));
+
+  ASSERT_OK(DB::Open(opts, dbname, &db));
 
   // Verify each sst file checksum value and checksum name
   FileChecksumTestHelper fct_helper(opts, db, dbname);
@@ -499,14 +520,21 @@ TEST_F(LdbCmdTest, DumpFileChecksumCRC32) {
   FileChecksumTestHelper fct_helper_ac(opts, db, dbname);
   ASSERT_OK(fct_helper_ac.VerifyEachFileChecksum());
 
+  ASSERT_OK(db->Close());
+  delete db;
+
   ASSERT_EQ(0,
-            LDBCommandRunner::RunCommand(3, argv, opts, LDBOptions(), nullptr));
+            LDBCommandRunner::RunCommand(4, argv, opts, LDBOptions(), nullptr));
+
+  ASSERT_OK(DB::Open(opts, dbname, &db));
 
   // Verify the checksum information in memory is the same as that in Manifest;
   std::vector<LiveFileMetaData> live_files;
   db->GetLiveFilesMetaData(&live_files);
-  delete db;
   ASSERT_OK(fct_helper_ac.VerifyChecksumInManifest(live_files));
+
+  ASSERT_OK(db->Close());
+  delete db;
 }
 
 TEST_F(LdbCmdTest, BlobDBDumpFileChecksumCRC32) {
@@ -554,14 +582,19 @@ TEST_F(LdbCmdTest, BlobDBDumpFileChecksumCRC32) {
     ASSERT_OK(db->Put(wopts, oss.str(), v));
   }
   ASSERT_OK(db->Flush(fopts));
+  ASSERT_OK(db->Close());
+  delete db;
 
   char arg1[] = "./ldb";
   std::string arg2_str = "--db=" + dbname;
   char arg3[] = "file_checksum_dump";
-  char* argv[] = {arg1, const_cast<char*>(arg2_str.c_str()), arg3};
+  char arg4[] = "--hex";
+  char* argv[] = {arg1, const_cast<char*>(arg2_str.c_str()), arg3, arg4};
 
   ASSERT_EQ(0,
-            LDBCommandRunner::RunCommand(3, argv, opts, LDBOptions(), nullptr));
+            LDBCommandRunner::RunCommand(4, argv, opts, LDBOptions(), nullptr));
+
+  ASSERT_OK(DB::Open(opts, dbname, &db));
 
   // Verify each sst and blob file checksum value and checksum name
   FileChecksumTestHelper fct_helper(opts, db, dbname);
@@ -583,9 +616,11 @@ TEST_F(LdbCmdTest, BlobDBDumpFileChecksumCRC32) {
   FileChecksumTestHelper fct_helper_ac(opts, db, dbname);
   ASSERT_OK(fct_helper_ac.VerifyEachFileChecksum());
 
-  ASSERT_EQ(0,
-            LDBCommandRunner::RunCommand(3, argv, opts, LDBOptions(), nullptr));
+  ASSERT_OK(db->Close());
   delete db;
+
+  ASSERT_EQ(0,
+            LDBCommandRunner::RunCommand(4, argv, opts, LDBOptions(), nullptr));
 }
 
 TEST_F(LdbCmdTest, OptionParsing) {
@@ -876,6 +911,62 @@ TEST_F(LdbCmdTest, LoadCFOptionsAndOverride) {
   ASSERT_EQ(options.num_levels, opts.num_levels);
   ASSERT_EQ(column_families[1].options.num_levels, cf_opts.num_levels);
   ASSERT_EQ(column_families[1].options.write_buffer_size, 268435456);
+}
+
+TEST_F(LdbCmdTest, RenameDbAndLoadOptions) {
+  Env* env = TryLoadCustomOrDefaultEnv();
+  Options opts;
+  opts.env = env;
+  opts.create_if_missing = false;
+
+  std::string old_dbname = test::PerThreadDBPath(env, "ldb_cmd_test");
+  std::string new_dbname = old_dbname + "_2";
+  DestroyDB(old_dbname, opts);
+  DestroyDB(new_dbname, opts);
+
+  char old_arg[1024];
+  snprintf(old_arg, sizeof(old_arg), "--db=%s", old_dbname.c_str());
+  char new_arg[1024];
+  snprintf(new_arg, sizeof(old_arg), "--db=%s", new_dbname.c_str());
+  const char* argv1[] = {"./ldb",
+                         old_arg,
+                         "put",
+                         "key1",
+                         "value1",
+                         "--try_load_options",
+                         "--create_if_missing"};
+
+  const char* argv2[] = {"./ldb", old_arg, "get", "key1", "--try_load_options"};
+  const char* argv3[] = {"./ldb", new_arg,  "put",
+                         "key2",  "value2", "--try_load_options"};
+
+  const char* argv4[] = {"./ldb", new_arg, "get", "key1", "--try_load_options"};
+  const char* argv5[] = {"./ldb", new_arg, "get", "key2", "--try_load_options"};
+
+  ASSERT_EQ(
+      0, LDBCommandRunner::RunCommand(7, argv1, opts, LDBOptions(), nullptr));
+  ASSERT_EQ(
+      0, LDBCommandRunner::RunCommand(5, argv2, opts, LDBOptions(), nullptr));
+  ConfigOptions config_opts;
+  Options options;
+  std::vector<ColumnFamilyDescriptor> column_families;
+  config_opts.env = env;
+  ASSERT_OK(
+      LoadLatestOptions(config_opts, old_dbname, &options, &column_families));
+  ASSERT_EQ(options.wal_dir, "");
+
+  ASSERT_OK(env->RenameFile(old_dbname, new_dbname));
+  ASSERT_NE(
+      0, LDBCommandRunner::RunCommand(6, argv1, opts, LDBOptions(), nullptr));
+  ASSERT_NE(
+      0, LDBCommandRunner::RunCommand(5, argv2, opts, LDBOptions(), nullptr));
+  ASSERT_EQ(
+      0, LDBCommandRunner::RunCommand(6, argv3, opts, LDBOptions(), nullptr));
+  ASSERT_EQ(
+      0, LDBCommandRunner::RunCommand(5, argv4, opts, LDBOptions(), nullptr));
+  ASSERT_EQ(
+      0, LDBCommandRunner::RunCommand(5, argv5, opts, LDBOptions(), nullptr));
+  DestroyDB(new_dbname, opts);
 }
 }  // namespace ROCKSDB_NAMESPACE
 

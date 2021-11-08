@@ -13,6 +13,7 @@
 #include "env/mock_env.h"
 #include "rocksdb/convenience.h"
 #include "rocksdb/env_encryption.h"
+#include "rocksdb/unique_id.h"
 #include "rocksdb/utilities/object_registry.h"
 #include "util/random.h"
 
@@ -59,26 +60,22 @@ SpecialEnv::SpecialEnv(Env* base, bool time_elapse_only_sleep)
 DBTestBase::DBTestBase(const std::string path, bool env_do_fsync)
     : mem_env_(nullptr), encrypted_env_(nullptr), option_config_(kDefault) {
   Env* base_env = Env::Default();
-#ifndef ROCKSDB_LITE
-  const char* test_env_uri = getenv("TEST_ENV_URI");
-  if (test_env_uri) {
-    Env* test_env = nullptr;
-    Status s = Env::LoadEnv(test_env_uri, &test_env, &env_guard_);
-    base_env = test_env;
-    EXPECT_OK(s);
-    EXPECT_NE(Env::Default(), base_env);
-  }
-#endif  // !ROCKSDB_LITE
+  ConfigOptions config_options;
+  EXPECT_OK(test::CreateEnvFromSystem(config_options, &base_env, &env_guard_));
   EXPECT_NE(nullptr, base_env);
   if (getenv("MEM_ENV")) {
-    mem_env_ = new MockEnv(base_env);
+    mem_env_ = MockEnv::Create(base_env, base_env->GetSystemClock());
   }
 #ifndef ROCKSDB_LITE
   if (getenv("ENCRYPTED_ENV")) {
     std::shared_ptr<EncryptionProvider> provider;
-    Status s = EncryptionProvider::CreateFromString(
-        ConfigOptions(), std::string("test://") + getenv("ENCRYPTED_ENV"),
-        &provider);
+    std::string provider_id = getenv("ENCRYPTED_ENV");
+    if (provider_id.find("=") == std::string::npos &&
+        !EndsWith(provider_id, "://test")) {
+      provider_id = provider_id + "://test";
+    }
+    EXPECT_OK(EncryptionProvider::CreateFromString(ConfigOptions(), provider_id,
+                                                   &provider));
     encrypted_env_ = NewEncryptedEnv(mem_env_ ? mem_env_ : base_env, provider);
   }
 #endif  // !ROCKSDB_LITE
@@ -478,12 +475,8 @@ Options DBTestBase::GetOptions(
     case kInfiniteMaxOpenFiles:
       options.max_open_files = -1;
       break;
-    case kxxHashChecksum: {
-      table_options.checksum = kxxHash;
-      break;
-    }
-    case kxxHash64Checksum: {
-      table_options.checksum = kxxHash64;
+    case kXXH3Checksum: {
+      table_options.checksum = kXXH3;
       break;
     }
     case kFIFOCompaction: {
@@ -1074,12 +1067,12 @@ int DBTestBase::NumTableFilesAtLevel(int level, int cf) {
   std::string property;
   if (cf == 0) {
     // default cfd
-    EXPECT_TRUE(db_->GetProperty(
-        "rocksdb.num-files-at-level" + NumberToString(level), &property));
+    EXPECT_TRUE(db_->GetProperty("rocksdb.num-files-at-level" + ToString(level),
+                                 &property));
   } else {
-    EXPECT_TRUE(db_->GetProperty(
-        handles_[cf], "rocksdb.num-files-at-level" + NumberToString(level),
-        &property));
+    EXPECT_TRUE(db_->GetProperty(handles_[cf],
+                                 "rocksdb.num-files-at-level" + ToString(level),
+                                 &property));
   }
   return atoi(property.c_str());
 }
@@ -1089,12 +1082,10 @@ double DBTestBase::CompressionRatioAtLevel(int level, int cf) {
   if (cf == 0) {
     // default cfd
     EXPECT_TRUE(db_->GetProperty(
-        "rocksdb.compression-ratio-at-level" + NumberToString(level),
-        &property));
+        "rocksdb.compression-ratio-at-level" + ToString(level), &property));
   } else {
     EXPECT_TRUE(db_->GetProperty(
-        handles_[cf],
-        "rocksdb.compression-ratio-at-level" + NumberToString(level),
+        handles_[cf], "rocksdb.compression-ratio-at-level" + ToString(level),
         &property));
   }
   return std::stod(property);
@@ -1659,5 +1650,15 @@ uint64_t DBTestBase::GetNumberOfSstFilesForColumnFamily(
   return result;
 }
 #endif  // ROCKSDB_LITE
+
+void VerifySstUniqueIds(const TablePropertiesCollection& props) {
+  ASSERT_FALSE(props.empty());  // suspicious test if empty
+  std::unordered_set<std::string> seen;
+  for (auto& pair : props) {
+    std::string id;
+    ASSERT_OK(GetUniqueIdFromTableProperties(*pair.second, &id));
+    ASSERT_TRUE(seen.insert(id).second);
+  }
+}
 
 }  // namespace ROCKSDB_NAMESPACE
