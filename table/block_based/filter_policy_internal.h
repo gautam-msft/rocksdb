@@ -275,4 +275,31 @@ class LevelThresholdFilterPolicy : public BuiltinFilterPolicy {
   int starting_level_for_b_;
 };
 
+// Chooses between two filter policies based on LSM level, but
+// only for Level and Universal compaction styles. Flush is treated
+// as level -1. Policy b is considered fallback / primary policy.
+class LevelThresholdFilterPolicy : public BuiltinFilterPolicy {
+ public:
+  LevelThresholdFilterPolicy(std::unique_ptr<const FilterPolicy>&& a,
+                             std::unique_ptr<const FilterPolicy>&& b,
+                             int starting_level_for_b);
+
+  // Deprecated block-based filter only
+  void CreateFilter(const Slice* keys, int n, std::string* dst) const override;
+
+  FilterBitsBuilder* GetBuilderWithContext(
+      const FilterBuildingContext& context) const override;
+
+  inline int TEST_GetStartingLevelForB() const { return starting_level_for_b_; }
+
+  inline const FilterPolicy* TEST_GetPolicyA() const { return policy_a_.get(); }
+
+  inline const FilterPolicy* TEST_GetPolicyB() const { return policy_b_.get(); }
+
+ private:
+  const std::unique_ptr<const FilterPolicy> policy_a_;
+  const std::unique_ptr<const FilterPolicy> policy_b_;
+  int starting_level_for_b_;
+};
+
 }  // namespace ROCKSDB_NAMESPACE
