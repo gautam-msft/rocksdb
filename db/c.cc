@@ -1520,10 +1520,6 @@ void rocksdb_flush_cf(
   SaveError(errptr, db->rep->Flush(options->rep, column_family->rep));
 }
 
-void rocksdb_flush_wal(rocksdb_t* db, unsigned char sync, char** errptr) {
-  SaveError(errptr, db->rep->FlushWAL(sync));
-}
-
 void rocksdb_disable_file_deletions(
     rocksdb_t* db,
     char** errptr) {
