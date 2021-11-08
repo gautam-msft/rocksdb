@@ -1063,7 +1063,7 @@ BloomFilterPolicy::BloomFilterPolicy(double bits_per_key, Mode mode)
 
 BloomFilterPolicy::~BloomFilterPolicy() {}
 
-const char* BloomFilterPolicy::Name() const {
+const char* BuiltinFilterPolicy::Name() const {
   return "rocksdb.BuiltinBloomFilter";
 }
 
@@ -1096,8 +1096,8 @@ void BloomFilterPolicy::CreateFilter(const Slice* keys, int n,
   }
 }
 
-bool BloomFilterPolicy::KeyMayMatch(const Slice& key,
-                                    const Slice& bloom_filter) const {
+bool BuiltinFilterPolicy::KeyMayMatch(const Slice& key,
+                                      const Slice& bloom_filter) const {
   const size_t len = bloom_filter.size();
   if (len < 2 || len > 0xffffffffU) {
     return false;
@@ -1119,7 +1119,7 @@ bool BloomFilterPolicy::KeyMayMatch(const Slice& key,
                                                  array);
 }
 
-FilterBitsBuilder* BloomFilterPolicy::GetFilterBitsBuilder() const {
+FilterBitsBuilder* BuiltinFilterPolicy::GetFilterBitsBuilder() const {
   // This code path should no longer be used, for the built-in
   // BloomFilterPolicy. Internal to RocksDB and outside
   // BloomFilterPolicy, only get a FilterBitsBuilder with
@@ -1193,7 +1193,7 @@ FilterBitsBuilder* BloomFilterPolicy::GetBuilderFromContext(
 
 // Read metadata to determine what kind of FilterBitsReader is needed
 // and return a new one.
-FilterBitsReader* BloomFilterPolicy::GetFilterBitsReader(
+FilterBitsReader* BuiltinFilterPolicy::GetFilterBitsReader(
     const Slice& contents) const {
   uint32_t len_with_meta = static_cast<uint32_t>(contents.size());
   if (len_with_meta <= kMetadataLen) {
@@ -1274,7 +1274,7 @@ FilterBitsReader* BloomFilterPolicy::GetFilterBitsReader(
                                    log2_cache_line_size);
 }
 
-FilterBitsReader* BloomFilterPolicy::GetRibbonBitsReader(
+FilterBitsReader* BuiltinFilterPolicy::GetRibbonBitsReader(
     const Slice& contents) const {
   uint32_t len_with_meta = static_cast<uint32_t>(contents.size());
   uint32_t len = len_with_meta - kMetadataLen;
@@ -1298,7 +1298,7 @@ FilterBitsReader* BloomFilterPolicy::GetRibbonBitsReader(
 }
 
 // For newer Bloom filter implementations
-FilterBitsReader* BloomFilterPolicy::GetBloomBitsReader(
+FilterBitsReader* BuiltinFilterPolicy::GetBloomBitsReader(
     const Slice& contents) const {
   uint32_t len_with_meta = static_cast<uint32_t>(contents.size());
   uint32_t len = len_with_meta - kMetadataLen;
