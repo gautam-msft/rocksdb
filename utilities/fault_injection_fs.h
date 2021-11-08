@@ -487,11 +487,6 @@ class FaultInjectionTestFS : public FileSystemWrapper {
     enable_metadata_write_error_injection_ = true;
   }
 
-  void EnableMetadataWriteErrorInjection() {
-    MutexLock l(&mutex_);
-    enable_metadata_write_error_injection_ = true;
-  }
-
   void DisableWriteErrorInjection() {
     MutexLock l(&mutex_);
     enable_write_error_injection_ = false;
